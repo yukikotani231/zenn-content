@@ -1,0 +1,17 @@
+{
+  "name": "zenn-content",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "preview": "zenn preview",
+    "new:article": "zenn new:article",
+    "new:book": "zenn new:book"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "zenn-cli": "^0.2.10"
+  }
+}
