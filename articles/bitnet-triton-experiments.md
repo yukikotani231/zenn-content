@@ -14,7 +14,7 @@ BitNet は Microsoft が 2024年に提案した 1.58-bit 量子化手法で、�
 
 調べてみると、学習時の誤差逆伝播のオーバーヘッドや、GPU での高速化が難しいといった課題があるようだった。とはいえ、エッジデバイスで大規模モデルを動かすという魅力は捨てがたい。実際のところどうなのか、自分で実装して確かめてみることにした。
 
-本記事では、BitNet を Triton カーネルとして GPU 上に実装し、様々な実験を通じて得られた知見をまとめる。
+本記事では、BitNet の概要と現状の課題を整理した上で、Triton カーネルとして GPU 上に実装し、学習・推論の両面で実用性を検証した結果をまとめる。
 
 **実験で作成したリポジトリ:**
 - [bitnet-triton](https://github.com/yukikotani231/bitnet-triton) - Triton カーネル実装
@@ -61,7 +61,7 @@ ternary weights {-1, 0, +1} の場合、行列演算が加算と減算だけで�
 y = Σ(x where w=+1) - Σ(x where w=-1)
 ```
 
-これは CPU では SIMD 命令で非常に効率的に実行できるため、理論上は大幅な高速化が期待できた。
+乗算が不要になるため、CPU では SIMD 命令による高速化が期待できた。GPU でも Tensor Core を介さない軽量な演算に置き換えられる可能性があった（結論から言うと、GPU では期待通りにはいかなかったのだが）。
 
 ### 実際の使用例
 
@@ -99,15 +99,13 @@ BitNet の最大の課題は、GPU での高速化が期待ほどできないこ
 
 - Tensor Core は浮動小数点演算に特化しており、BitNet の整数演算には不向き[^tensor-core-perf]
 - LUT (Lookup Table) ベースの手法は GPU では効率が悪い[^bitnet-gpu-perf]
-- 実際の Tensor Core 利用率は理論値の 9-31% 程度に留まる[^tensor-core-util]
 
-**CPU との性能差**
+**CPU との性能差が小さい**
 
-A100 GPU では BitNet b1.58 2B モデルで 250 tokens/s を達成したが、CPU では 110 tokens/s、82 tokens/s、88 tokens/s と、GPU の 2.3x〜3x の性能差に留まっている[^cpu-gpu-perf]。GPU は CPU の 17x〜20x のメモリ帯域幅を持つことを考えると、期待されたほどの性能差がない。
+BitNet.cpp の論文[^cpu-gpu-perf]によると、A100 GPU では BitNet b1.58 2B モデルで 250 tokens/s を達成したのに対し、CPU（複数構成での測定）では 82〜110 tokens/s と、GPU との性能差はわずか 2.3x〜3x に留まっている。通常の FP16 推論では GPU が CPU を桁違いに上回ることを考えると、BitNet では GPU の優位性が大幅に縮まっていると言える。
 
 [^tensor-core-perf]: [Benchmarking GPU Tensor Cores on General Matrix Multiplication Kernels through CUTLASS](https://www.mdpi.com/2076-3417/13/24/13022)
 [^bitnet-gpu-perf]: [Advances to low-bit quantization enable LLMs on edge devices](https://www.microsoft.com/en-us/research/blog/advances-to-low-bit-quantization-enable-llms-on-edge-devices/)
-[^tensor-core-util]: [The Power of 8: Getting the most out of Tensor Cores](https://medium.com/@michael.diggin/the-power-of-8-getting-the-most-out-of-tensor-cores-c7704ae0c5c1)
 [^cpu-gpu-perf]: [Bitnet.cpp: Efficient Edge Inference for Ternary LLMs](https://arxiv.org/pdf/2502.11880)
 
 ### INT4 との競合
@@ -124,15 +122,17 @@ INT4 量子化（AWQ, GPTQ など）は：
 
 とはいえ、諦めるにはまだ早い。調査を進めるうちに、いくつか気になる点があった。
 
-1. **ほとんどの評価が CPU ベース**：GPU での最適化はまだ改善の余地があるのでは？
-2. **Triton での実装例が少ない**：Triton カーネルで工夫すれば何とかならないか？
+1. **Triton での実装例が少ない**：Triton カーネルで工夫すれば GPU でも速くならないか？
+2. **自分で実装すれば理解が深まる**：論文を読むだけでは分からないことがある
 3. **個人的な興味**：スマホで大規模 LLM を動かせたら面白いのでは？
 
 特に3つ目が大きい。Claude Opus のような高性能モデルをスマホで動かせたら、プライバシーも保てるし、オフラインでも使える。課金も不要だ。
 
-そんなわけで、年末年始の時間を使って実際に Triton カーネルを実装し、実用性を検証してみることにした。
+そんなわけで、年末年始の時間を使って Triton カーネルを実装し、BitNet が本当に GPU で使い物になるのか検証してみることにした。なお、実装には Claude Code に大いに頼った。
 
 ## Triton カーネルの実装
+
+まずは BitNet の行列演算を GPU 上で動かすための Triton カーネルを実装する。ポイントは、2-bit にパッキングされた重みをカーネル内でアンパックしながら行列積を計算することだ。
 
 ### 2-bit パッキング
 
@@ -195,7 +195,7 @@ def _bitnet_matmul_kernel(
 
 ### 概要
 
-Triton カーネルの実装が完成したので、まずは MNIST 画像生成タスクで動作確認をすることにした。Diffusion Transformer (DiT) を BitNet 化して学習させてみる。
+Triton カーネルの実装が完成したので、まずは実際のモデルで学習できるか確認する。MNIST 画像生成タスクで Diffusion Transformer (DiT) を BitNet 化して学習させてみた。
 
 「どうせ全部 BitLinear に置き換えればいいんでしょ」と軽い気持ちで実装したら、見事に失敗した。
 
@@ -244,23 +244,15 @@ class BitNetDiT(nn.Module):
 
 ### 背景
 
-実験1で DiT が動くことは確認できた。次は速度だ。
+実験1で BitNet による学習が動くことは確認できた。次に気になるのは推論速度だ。
 
-BitNet.cpp の README を読んでいると、T-MAC という手法で CPU で大幅な高速化を実現していることが分かった。LUT (Lookup Table) を使って乗算を完全に排除するというアイデアだ。「これを GPU に移植したら速くなるのでは？」と思い、実装してみることにした。
+BitNet.cpp の README を読んでいると、T-MAC という手法で CPU で大幅な高速化を実現していることが分かった。前述の「乗算の排除」を活用し、LUT (Lookup Table) で高速にルックアップするというアイデアだ。「これを GPU に移植したら速くなるのでは？」と思い、実装してみることにした。
 
 ### T-MAC (BitNet.cpp) の仕組み
 
-```
-ternary weights {-1, 0, +1} の場合:
-  y = Σ(x where w=+1) - Σ(x where w=-1)
+CPU での BitNet.cpp は、T-MAC[^tmac] の手法を使っている。4つの ternary weights をグループ化し、256 エントリの LUT を構築する。これを CPU の SIMD shuffle 命令（`vpshufb`）で高速にルックアップすることで、乗算を完全に排除している。
 
-乗算が不要！加算・減算のみで計算可能
-
-CPU での実装:
-  4つの重み (8bit) をグループ化
-  → 256エントリの LUT を構築
-  → SIMD shuffle (vpshufb) で高速ルックアップ
-```
+[^tmac]: [T-MAC: Table Lookup for Ternary Matrix Multiplication](https://arxiv.org/abs/2407.00088)
 
 ### GPU での実装と結果
 
@@ -341,18 +333,6 @@ BitNet: 8,192 サンプル (4x 多い！)
 | **低レイテンシ必須** | 単一サンプルは 0.2x |
 | **最高品質が必要** | 量子化による精度低下 |
 
-## GPU での高速化: BitNet 以外の選択肢
-
-実験を通じて、BitNet は「メモリ削減」が目的で「速度」は犠牲になることが分かった。では、速度を重視する場合は何を使えばいいのか。参考までに、GPU での高速化手法をまとめておく。
-
-| 手法 | 圧縮 | 速度 | 用途 |
-|------|------|------|------|
-| FP16 + Flash Attention | 2x | 2-4x | 汎用 |
-| INT8 + TensorRT | 4x | 2-4x | 推論最適化 |
-| INT4 (AWQ/GPTQ) | 8x | 1.5-2x | メモリ節約 |
-| vLLM | - | 2-24x | LLM サービング |
-| Speculative Decoding | - | 2-3x | 生成高速化 |
-
 ## まとめ
 
 ### 得られた知見
@@ -388,20 +368,22 @@ LLaMA-7B での比較:
 
 つまり、BitNet は「速度と引き換えにメモリを節約する」技術だ。メモリが制約のボトルネックなら強力な選択肢になるが、スマホで Claude Opus レベルのモデルを快適に動かすという当初の夢には程遠い。
 
-**現実的な選択肢**
+GPU で速度も求めるなら、現時点では他の手法の方が実用的だ。
 
-- メモリに余裕があるなら → FP16 + Flash Attention
-- 推論最適化なら → INT8/INT4 + TensorRT
-- LLM サービングなら → vLLM
-- スマホで快適に使いたいなら → **素直に API を使う**
+| 手法 | 圧縮 | 速度 | 用途 |
+|------|------|------|------|
+| FP16 + Flash Attention | 2x | 2-4x | 汎用 |
+| INT8 + TensorRT | 4x | 2-4x | 推論最適化 |
+| INT4 (AWQ/GPTQ) | 8x | 1.5-2x | メモリ節約 |
+| vLLM | - | 2-24x | LLM サービング |
+| Speculative Decoding | - | 2-3x | 生成高速化 |
 
-スマホで Opus を動かす夢は一旦諦めて、素直に Anthropic に課金することにした。Claude の API なら速度も速く、精度も高く、自分で GPU を管理する手間もない。技術的興味で実装するのは楽しかったが、実用性を考えると API 利用が現実的な選択だった。
+スマホで Opus を動かす夢は一旦諦めて、素直に Anthropic に課金することにした。Claude の API なら速度も速く、精度も高い。技術的興味で実装するのは楽しかったが、実用性を考えると API 利用が現実的な選択だった。
 
-とはいえ、この実験で BitNet の仕組みや GPU カーネルの最適化について深く学べたのは収穫だった。いつか本当にエッジデバイスで大規模モデルが快適に動く日が来るかもしれない。その時はまた挑戦してみたい。
+とはいえ、この実験で BitNet の仕組みや GPU カーネルの最適化について理解が深まったのは収穫だった。エッジデバイスで大規模モデルが快適に動く日が来たら、また挑戦してみたい。
 
 ## 参考資料
 
 - [BitNet: Scaling 1-bit Transformers for Large Language Models](https://arxiv.org/abs/2310.11453)
 - [The Era of 1-bit LLMs (BitNet b1.58)](https://arxiv.org/abs/2402.17764)
 - [BitNet.cpp](https://github.com/microsoft/BitNet)
-- [T-MAC: Table Lookup for Ternary Matrix Multiplication](https://arxiv.org/abs/2407.00088)
