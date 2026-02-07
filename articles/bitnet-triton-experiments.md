@@ -10,129 +10,57 @@ published: false
 
 年末年始に時間ができたので、以前話題になった BitNet について改めて調べてみた。
 
-BitNet は Microsoft が 2024年に提案した 1.58-bit 量子化手法で、重みを {-1, 0, +1} の3値に制限することで大幅なメモリ削減を実現する。当時は「スマホでも大規模LLMが動く」という期待もあったが、2026年現在、実用化の話はあまり聞かない。
+BitNet は Microsoft が 2024年に提案した 1.58-bit 量子化手法で、重みを {-1, 0, +1} の3値だけで表現する。当時は「スマホでも大規模LLMが動くのでは」という期待もあったが、2026年現在、実用化の話はあまり聞かない。調べてみると学習時のオーバーヘッドや GPU との相性問題があるようだったが、エッジデバイスで大規模モデルを動かすという話は魅力的だし、実際のところどうなのか気になったので自分で Triton カーネルを実装して確かめてみることにした。なお、実装には Claude Code に大いに頼った。
 
-調べてみると、学習時の誤差逆伝播のオーバーヘッドや、GPU での高速化が難しいといった課題があるようだった。とはいえ、エッジデバイスで大規模モデルを動かすという魅力は捨てがたい。実際のところどうなのか、自分で実装して確かめてみることにした。
-
-本記事では、BitNet の概要と現状の課題を整理した上で、Triton カーネルとして GPU 上に実装し、学習・推論の両面で実用性を検証した結果をまとめる。
-
-**実験で作成したリポジトリ:**
+実験で作成したリポジトリはこちら：
 - [bitnet-triton](https://github.com/yukikotani231/bitnet-triton) - Triton カーネル実装
 - [bitnet-mnist](https://github.com/yukikotani231/bitnet-mnist) - MNIST での検証
 
-## BitNet とは
+## BitNet の概要
 
-### 基本概念
-
-BitNet b1.58 は、ニューラルネットワークの重みを3値 {-1, 0, +1} に量子化する手法だ[^bitnet-paper]。
-
-```python
-# 通常の Linear
-y = x @ W  # W は FP32/FP16
-
-# BitNet Linear
-W_ternary = quantize(W)  # W ∈ {-1, 0, +1}
-y = x @ W_ternary * scale
-```
+BitNet b1.58[^bitnet-paper] は、ニューラルネットワークの重みを {-1, 0, +1} の3値に量子化する。通常の Linear 層が `y = x @ W`（W は FP32/FP16）なのに対し、BitNet では量子化した ternary weights とスケール係数を使って `y = x @ W_ternary * scale` のように計算する。
 
 [^bitnet-paper]: [The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits](https://arxiv.org/abs/2402.17764)
 
-### なぜ画期的だったのか
+これが画期的だったのは2つの理由がある。まず、3値を2ビットでエンコードして16個の重みを1つの int32 にパッキングできるので、FP32 比で 16倍、FP16 比でも 8倍のメモリ圧縮になる。そしてもう一つ、重みが {-1, 0, +1} しかないので行列演算が `y = Σ(x where w=+1) - Σ(x where w=-1)` のように加算と減算だけで計算でき、乗算が不要になる。CPU では SIMD 命令でこの演算を効率的に実行できるし、GPU でも Tensor Core を介さない軽量な演算に置き換えられる可能性があった（結論から言うと GPU では期待通りにはいかなかったのだが）。
 
-従来の量子化手法（INT8, INT4）と比べて、BitNet の何が革新的だったのか。
-
-**1. 極端なメモリ圧縮**
-
-| 精度 | ビット数 | 圧縮率 |
-|------|---------|-------|
-| FP32 | 32 bit | 1x |
-| FP16 | 16 bit | 2x |
-| INT8 | 8 bit | 4x |
-| INT4 | 4 bit | 8x |
-| **BitNet (2-bit)** | 2 bit | **16x** |
-
-3値を2ビットでエンコードし、16個の重みを1つの int32 にパッキングすることで、FP32 比で 16倍のメモリ圧縮を実現する。
-
-**2. 乗算の排除**
-
-ternary weights {-1, 0, +1} の場合、行列演算が加算と減算だけで計算できる：
-
-```
-y = Σ(x where w=+1) - Σ(x where w=-1)
-```
-
-乗算が不要になるため、CPU では SIMD 命令による高速化が期待できた。GPU でも Tensor Core を介さない軽量な演算に置き換えられる可能性があった（結論から言うと、GPU では期待通りにはいかなかったのだが）。
-
-### 実際の使用例
-
-2025年、Microsoft は [BitNet b1.58 2B4T モデル](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T)をリリースし、2B パラメータで完全精度モデルと競争力のあるパフォーマンスを実証した[^bitnet-2b4t]。
-
-また、[BitNet.cpp](https://github.com/microsoft/BitNet) という CPU 向けの推論フレームワークも公開されており、ARM CPU で 1.37x〜5.07x、x86 CPU で 2.37x〜6.17x の高速化を実現している[^bitnet-cpp]。
+実際に 2025年には Microsoft が [BitNet b1.58 2B4T モデル](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T)をリリースしており、2B パラメータで完全精度モデルと遜色ない性能を出している[^bitnet-2b4t]。CPU 向けの推論フレームワーク [BitNet.cpp](https://github.com/microsoft/BitNet) も公開されていて、ARM CPU で 1.37x〜5.07x、x86 CPU で 2.37x〜6.17x の高速化が報告されている[^bitnet-cpp]。
 
 [^bitnet-2b4t]: [BitNet b1.58 2B4T Technical Report](https://arxiv.org/pdf/2504.12285)
 [^bitnet-cpp]: [Bitnet.cpp: Efficient Edge Inference for Ternary LLMs](https://arxiv.org/pdf/2502.11880)
 
-## BitNet が広く実用化されなかった理由
+## BitNet が広く実用化されていない理由
 
-では、なぜこれほど魅力的に見える BitNet が広く実用化されていないのか。調べてみると、いくつかの課題が見えてきた。
+ここまで聞くと良いことずくめに見えるが、実際にはあまり普及していない。調べてみるといくつか課題があった。
 
 ### 学習時のオーバーヘッド
 
-BitNet は学習時に特殊な工夫が必要になる。重みは {-1, 0, +1} に量子化されるが、勾配とオプティマイザの状態は高精度（FP32）で保持する必要がある[^quantization-training]。
-
-- **Straight-Through Estimator (STE)** を使って非微分可能な量子化関数を近似
-- 勾配を低精度で蓄積するとゼロ勾配や高誤差が発生
-- 結果として、学習時のメモリ削減効果は限定的
-
-量子化学習 (QAT) の主な欠点は、ニューラルネットワークモデルの再学習にかかる計算コストで、特に低ビット精度の量子化では、精度を回復するために数百エポックの学習が必要になることもある[^qat-cost]。
+BitNet は推論時の重みこそ {-1, 0, +1} だが、学習時には勾配やオプティマイザの状態を FP32 で保持する必要がある[^quantization-training]。量子化関数は微分できないので Straight-Through Estimator (STE) で近似するのだが、勾配を低精度で蓄積するとゼロ勾配や高誤差が発生するため、結局学習時のメモリ削減効果は限定的になる。また、低ビット量子化は精度を回復するために数百エポックの再学習が必要になることもあり[^qat-cost]、学習コストの面でも楽ではない。
 
 [^quantization-training]: [BitNet: Scaling 1-bit Transformers for Large Language Models](https://arxiv.org/pdf/2310.11453)
 [^qat-cost]: [A White Paper on Neural Network Quantization](https://arxiv.org/pdf/2106.08295)
 
-### GPU での高速化が困難
+### GPU での高速化が難しい
 
-BitNet の最大の課題は、GPU での高速化が期待ほどできないことだ。
+もっと根本的な問題として、GPU での高速化が期待ほどできないというのがある。現代の GPU は FP16/FP32 の行列積に最適化された Tensor Core を搭載しているが、BitNet の整数演算はこれとは相性が悪く[^tensor-core-perf]、LUT ベースの手法も GPU では効率的に動かない[^bitnet-gpu-perf]。
 
-**Tensor Core との相性問題**
-
-現代の GPU は FP16/FP32 の行列積に最適化された Tensor Core を搭載している。しかし：
-
-- Tensor Core は浮動小数点演算に特化しており、BitNet の整数演算には不向き[^tensor-core-perf]
-- LUT (Lookup Table) ベースの手法は GPU では効率が悪い[^bitnet-gpu-perf]
-
-**CPU との性能差が小さい**
-
-BitNet.cpp の論文[^cpu-gpu-perf]によると、A100 GPU では BitNet b1.58 2B モデルで 250 tokens/s を達成したのに対し、CPU（複数構成での測定）では 82〜110 tokens/s と、GPU との性能差はわずか 2.3x〜3x に留まっている。通常の FP16 推論では GPU が CPU を桁違いに上回ることを考えると、BitNet では GPU の優位性が大幅に縮まっていると言える。
+BitNet.cpp の論文[^cpu-gpu-perf]を見ると状況がよく分かる。A100 GPU で BitNet b1.58 2B モデルを動かすと 250 tokens/s だが、CPU でも 82〜110 tokens/s 出ている。性能差がわずか 2.3x〜3x しかない。普通の FP16 推論なら GPU は CPU の数十倍速いことを考えると、BitNet では GPU を使う旨味がかなり薄い。
 
 [^tensor-core-perf]: [Benchmarking GPU Tensor Cores on General Matrix Multiplication Kernels through CUTLASS](https://www.mdpi.com/2076-3417/13/24/13022)
 [^bitnet-gpu-perf]: [Advances to low-bit quantization enable LLMs on edge devices](https://www.microsoft.com/en-us/research/blog/advances-to-low-bit-quantization-enable-llms-on-edge-devices/)
 [^cpu-gpu-perf]: [Bitnet.cpp: Efficient Edge Inference for Ternary LLMs](https://arxiv.org/pdf/2502.11880)
 
-### INT4 との競合
+### INT4 量子化で十分なことが多い
 
-INT4 量子化（AWQ, GPTQ など）は：
-
-- GPU での実装が成熟している
-- Tensor Core を効率的に利用できる
-- 精度の劣化が BitNet より少ない
-
-結果として、GPU ベースの推論では INT4 が選ばれることが多い。
+さらに言えば、GPU で推論するなら AWQ や GPTQ といった INT4 量子化の方が実装も成熟しているし、Tensor Core をちゃんと活かせるし、精度の劣化も BitNet より少ない。GPU ベースの推論では INT4 で事足りる場面が多く、BitNet の出番がないというのが現状だ。
 
 ## それでも実験してみた理由
 
-とはいえ、諦めるにはまだ早い。調査を進めるうちに、いくつか気になる点があった。
-
-1. **Triton での実装例が少ない**：Triton カーネルで工夫すれば GPU でも速くならないか？
-2. **自分で実装すれば理解が深まる**：論文を読むだけでは分からないことがある
-3. **個人的な興味**：スマホで大規模 LLM を動かせたら面白いのでは？
-
-特に3つ目が大きい。Claude Opus のような高性能モデルをスマホで動かせたら、プライバシーも保てるし、オフラインでも使える。課金も不要だ。
-
-そんなわけで、年末年始の時間を使って Triton カーネルを実装し、BitNet が本当に GPU で使い物になるのか検証してみることにした。なお、実装には Claude Code に大いに頼った。
+とはいえ、Triton での GPU 実装例はまだ少ないし、カーネルの書き方次第で結果が変わる可能性もある。それに、Claude Opus クラスのモデルをスマホで動かせたら API 課金もいらないしオフラインでも使えるし最高じゃないかという夢がどうしても捨てきれなかったので、年末年始の時間を使って実際に手を動かしてみることにした。
 
 ## Triton カーネルの実装
 
-まずは BitNet の行列演算を GPU 上で動かすための Triton カーネルを実装する。ポイントは、2-bit にパッキングされた重みをカーネル内でアンパックしながら行列積を計算することだ。
+まず BitNet の行列演算を GPU で動かすための Triton カーネルを書く。2-bit にパッキングした重みをカーネル内でアンパックしながら行列積を計算するのがポイントになる。
 
 ### 2-bit パッキング
 
@@ -193,111 +121,63 @@ def _bitnet_matmul_kernel(
 
 ## 実験1: BitNet DiT (Diffusion Transformer)
 
-### 概要
+Triton カーネルが動くようになったので、まずは実際のモデルで学習できるか確認したい。MNIST の画像生成タスクで Diffusion Transformer (DiT) を BitNet 化して学習させてみた。
 
-Triton カーネルの実装が完成したので、まずは実際のモデルで学習できるか確認する。MNIST 画像生成タスクで Diffusion Transformer (DiT) を BitNet 化して学習させてみた。
-
-「どうせ全部 BitLinear に置き換えればいいんでしょ」と軽い気持ちで実装したら、見事に失敗した。
-
-### 最初の失敗: Loss が 1.0 で停滞
+最初は「全部の Linear を BitLinear に置き換えればいいでしょ」と思ってそうしたのだが、Loss が 1.0 付近で停滞して全く学習が進まなかった。
 
 ```python
-# 失敗した実装
-class BitNetDiT(nn.Module):
-    def __init__(self, ...):
-        # 全てを BitLinear に
-        self.time_embed = BitLinear(dim, dim)  # ← 問題
-        self.adaLN = BitLinear(dim, dim * 4)   # ← 問題
+# 失敗した実装：全てを BitLinear に
+self.time_embed = BitLinear(dim, dim)  # ← これが問題
+self.adaLN = BitLinear(dim, dim * 4)   # ← これも問題
 ```
 
-**原因**: 時間埋め込みと AdaLN（条件付け層）を BitLinear にすると、連続的な条件情報が量子化で破壊される。
-
-### 修正版
+原因は、時間埋め込みと AdaLN（条件付け層）まで BitLinear にしてしまったこと。これらの層は連続的な条件情報を扱うので、{-1, 0, +1} に量子化すると情報が壊れてしまう。時間埋め込みを通常の FP32 Linear に戻して、Attention と MLP だけ BitLinear にしたら 50 epoch で Loss 0.045 まで下がり、ちゃんと数字が認識できる画像が生成されるようになった。
 
 ```python
-# 成功した実装
-class BitNetDiT(nn.Module):
-    def __init__(self, ...):
-        # 時間埋め込みは通常の Linear（条件情報を保持）
-        self.time_embed = nn.Sequential(
-            SinusoidalPositionEmbedding(dim),
-            nn.Linear(dim, dim),  # ← FP32
-            nn.GELU(),
-            nn.Linear(dim, dim),  # ← FP32
-        )
-
-        # Attention と MLP は BitLinear OK
-        self.qkv = BitLinear(dim, dim * 3)
-        self.mlp = BitLinearMLP(dim)
+# 成功した実装：条件付け層は FP32 のまま
+self.time_embed = nn.Sequential(
+    SinusoidalPositionEmbedding(dim),
+    nn.Linear(dim, dim),  # FP32
+    nn.GELU(),
+    nn.Linear(dim, dim),  # FP32
+)
+self.qkv = BitLinear(dim, dim * 3)  # ここは BitLinear OK
+self.mlp = BitLinearMLP(dim)        # ここも OK
 ```
 
-### 結果
-
-| モデル | Loss (50 epoch) | 画像品質 |
-|--------|-----------------|---------|
-| 失敗版 | ~1.0 (停滞) | ノイズ |
-| 修正版 | 0.045 | 認識可能な数字 |
-
-**教訓**: 条件付け層（時間埋め込み、クラス埋め込み等）は量子化してはいけない。
+教訓としては、条件付け層（時間埋め込みやクラス埋め込みなど）は量子化してはいけないということ。逆に、Attention や MLP の重み行列は BitLinear で問題なく動く。
 
 ## 実験2: LUT ベースカーネル (BitNet.cpp 方式)
 
-### 背景
+学習が動くことは確認できたので、次は推論速度を何とかしたい。
 
-実験1で BitNet による学習が動くことは確認できた。次に気になるのは推論速度だ。
-
-BitNet.cpp の README を読んでいると、T-MAC という手法で CPU で大幅な高速化を実現していることが分かった。前述の「乗算の排除」を活用し、LUT (Lookup Table) で高速にルックアップするというアイデアだ。「これを GPU に移植したら速くなるのでは？」と思い、実装してみることにした。
-
-### T-MAC (BitNet.cpp) の仕組み
-
-CPU での BitNet.cpp は、T-MAC[^tmac] の手法を使っている。4つの ternary weights をグループ化し、256 エントリの LUT を構築する。これを CPU の SIMD shuffle 命令（`vpshufb`）で高速にルックアップすることで、乗算を完全に排除している。
+BitNet.cpp の README を読んでいると、T-MAC[^tmac] という手法で CPU 上で大幅な高速化を実現していることが分かった。4つの ternary weights をグループ化して 256 エントリの LUT (Lookup Table) を構築し、CPU の SIMD shuffle 命令（`vpshufb`）で高速にルックアップすることで乗算を完全に排除している。これを GPU に移植したら速くなるのでは？と思い試してみた。
 
 [^tmac]: [T-MAC: Table Lookup for Ternary Matrix Multiplication](https://arxiv.org/abs/2407.00088)
 
-### GPU での実装と結果
+GPU 上では Triton の `tl.where` による条件分岐で加算/減算を切り替える形で実装した。
 
 ```python
-# LUT スタイルのカーネル
 @triton.jit
 def _bitnet_lut_kernel(...):
-    # 条件分岐で加算/減算
     c = tl.where(w == 2, x, tl.where(w == 0, -x, 0.0))
     acc += c
 ```
 
-**ベンチマーク結果:**
+結果は散々で、LUT 方式は `tl.dot` を使う元の実装と全く同じ速度だった。条件分岐を使う naive な ternary 実装に至っては 1.5倍遅い。
 
-| Config | Current (tl.dot) | LUT | Ternary |
-|--------|-----------------|-----|---------|
+| Config | tl.dot | LUT | Ternary |
+|--------|--------|-----|---------|
 | (1, 4096, 4096) | 0.48 ms | 0.48 ms | 0.70 ms |
 | (32, 4096, 4096) | 0.48 ms | 0.48 ms | 0.73 ms |
 
-期待していたが、結果は散々だった。LUT 方式は `tl.dot` を使う現在の実装と同じ速度で、特に改善は見られなかった。それどころか、条件分岐を使う naive な ternary 実装は 1.5倍も遅くなった。
-
-**結論**: GPU では LUT 方式のメリットがない。
-
-### なぜ GPU では効果がないのか
-
-| 要素 | CPU | GPU |
-|------|-----|-----|
-| 行列演算 | SIMD FMA | **Tensor Core** |
-| LUT 配置 | L1 キャッシュ | Shared Memory |
-| 高速命令 | vpshufb (shuffle) | なし |
-
-GPU の Tensor Core は FP16/FP32 の行列積に最適化されており、LUT ルックアップより圧倒的に高速だ。
+理由は単純で、CPU では SIMD FMA → LUT + vpshufb という置き換えが高速化に繋がるが、GPU では行列演算を Tensor Core がハードウェアレベルで処理するので、LUT に置き換える意味がない。GPU に `vpshufb` 相当の命令もなく、LUT を Shared Memory に置いても L1 キャッシュ上の CPU には敵わない。
 
 ## 実験3: 実用性ベンチマーク
 
-LUT 方式での高速化は失敗したが、メモリ削減効果は確実にあるはずだ。実際にどれくらいメモリが削減できて、スループットがどう変わるのか、定量的に測定してみることにした。
+速度面では厳しいことが分かってきたが、メモリ削減効果は確実にあるはずだ。実際にどのくらいのインパクトがあるのか定量的に測ってみた。
 
-### メモリ使用量
-
-| モデル | FP16 | BitNet | 圧縮率 |
-|--------|------|--------|-------|
-| GPT-2 | 0.11 GB | 0.01 GB | 16x |
-| LLaMA-7B | 13.00 GB | 0.81 GB | 16x |
-
-### スループット (hidden=4096)
+メモリ使用量は理論通り 16 倍の圧縮が確認できた（GPT-2 で 0.11GB → 0.01GB、LLaMA-7B で 13GB → 0.81GB）。一方でスループットは hidden=4096 で測定したところ、Batch Size 1 で FP16 の 0.19x、Batch Size 32 でも 0.20x と、やはりかなり遅い。Batch Size が大きくなるほど差が広がり、512 では 0.12x まで落ちる。
 
 | Batch Size | FP16 (tok/s) | BitNet (tok/s) | 比率 |
 |------------|--------------|----------------|------|
@@ -305,82 +185,17 @@ LUT 方式での高速化は失敗したが、メモリ削減効果は確実に�
 | 32 | 345,879 | 68,919 | 0.20x |
 | 512 | 1,997,117 | 237,756 | 0.12x |
 
-### 最大バッチサイズ
-
-```
-FP16:   2,048 サンプル
-BitNet: 8,192 サンプル (4x 多い！)
-```
-
-## BitNet の使いどころ
-
-ここまでの実験結果を踏まえて、BitNet がどういう場面で有効なのかを整理してみる。
-
-### ✓ 効果的なケース
-
-| シナリオ | 理由 |
-|---------|------|
-| **メモリ不足** | 16x 圧縮で大モデルが動く |
-| **大量バッチ推論** | 同メモリで 4x 多くのサンプル |
-| **エッジデバイス** | 小さい GPU で大きいモデル |
-| **コスト削減** | 小さい GPU インスタンス |
-
-### ✗ 不向きなケース
-
-| シナリオ | 理由 |
-|---------|------|
-| **メモリに余裕あり** | FP16 の方が速い |
-| **低レイテンシ必須** | 単一サンプルは 0.2x |
-| **最高品質が必要** | 量子化による精度低下 |
+ただし面白いのは最大バッチサイズで、メモリが小さい分だけ BitNet は FP16 の 4 倍のサンプルを同時に処理できる（FP16: 2,048 vs BitNet: 8,192）。速度が遅くてもバッチを大きく取れるので、スループット全体で見ればメモリが足りない環境では有利になるケースもありそうだ。
 
 ## まとめ
 
-### 得られた知見
+実験を通じて分かったのは、BitNet の本質はメモリ圧縮であって速度向上ではないということだ。GPU の Tensor Core は FP16/FP32 に最適化されているので、BitNet にしたところで速くはならない。LUT 方式も CPU の SIMD shuffle 命令があってこそ活きるもので、GPU に持ってきても意味がなかった。
 
-実験を通じて、以下のことが分かった。
+モデルの設計としては、条件付け層（時間埋め込みやクラス埋め込み）は FP32 のままにして、Attention や MLP だけ BitLinear にするのが正解だった。全部 BitLinear にすると学習が壊れるというのは、やってみないと分からないことだったと思う。
 
-1. **BitNet の本質はメモリ圧縮**
-   - GPU では速度向上しない（Tensor Core が FP16/FP32 に最適化されている）
-   - CPU では T-MAC/LUT 方式で速度も向上する
+メモリ 16x 圧縮の効果自体は本物で、LLaMA-7B が 13GB → 0.81GB になるのは確かにインパクトがある。ただし速度は FP16 の 0.2x 程度に落ちるので、メモリがボトルネックでない限り選ぶ理由がない。GPU で速度も求めるなら FP16 + Flash Attention、メモリを節約したいなら INT4 (AWQ/GPTQ)、LLM のサービングなら vLLM あたりが現実的な選択肢になる。
 
-2. **条件付け層は量子化してはいけない**
-   - 時間埋め込み、クラス埋め込みなどは FP32 を維持する必要がある
-   - Attention、MLP の重み行列は BitLinear で問題ない
-
-3. **LUT 方式は CPU 専用**
-   - GPU の Tensor Core は LUT ルックアップより圧倒的に高速
-   - CPU の SIMD shuffle 命令は LUT に最適化されている
-
-4. **実用的な価値はあるが限定的**
-   - メモリ 16x 圧縮で大モデルが小さい GPU で動く
-   - バッチサイズを 4x に増やせるためスループットは向上
-   - ただし単一サンプルの速度は 0.2x に低下
-
-### 結論：素直に Anthropic に課金することにした
-
-実験の結果、BitNet は確かにメモリを大幅に削減できるが、GPU では速度面で大きく劣ることが分かった。
-
-```
-LLaMA-7B での比較:
-  FP16:   13GB メモリ必要、高速
-  BitNet: 0.81GB で動作可能、ただし遅い
-```
-
-つまり、BitNet は「速度と引き換えにメモリを節約する」技術だ。メモリが制約のボトルネックなら強力な選択肢になるが、スマホで Claude Opus レベルのモデルを快適に動かすという当初の夢には程遠い。
-
-GPU で速度も求めるなら、現時点では他の手法の方が実用的だ。
-
-| 手法 | 圧縮 | 速度 | 用途 |
-|------|------|------|------|
-| FP16 + Flash Attention | 2x | 2-4x | 汎用 |
-| INT8 + TensorRT | 4x | 2-4x | 推論最適化 |
-| INT4 (AWQ/GPTQ) | 8x | 1.5-2x | メモリ節約 |
-| vLLM | - | 2-24x | LLM サービング |
-| Speculative Decoding | - | 2-3x | 生成高速化 |
-
-スマホで Opus を動かす夢は一旦諦めて、素直に Anthropic に課金することにした。Claude の API なら速度も速く、精度も高い。技術的興味で実装するのは楽しかったが、実用性を考えると API 利用が現実的な選択だった。
-
-とはいえ、この実験で BitNet の仕組みや GPU カーネルの最適化について理解が深まったのは収穫だった。エッジデバイスで大規模モデルが快適に動く日が来たら、また挑戦してみたい。
+結局、スマホで Opus を動かすという当初の夢には程遠く、素直に Anthropic に課金することにした。BitNet の仕組みや GPU カーネルの最適化について理解が深まったのは収穫だったが、実用性を考えると API を使うのが一番賢い。エッジデバイスで大規模モデルが快適に動く日が来たら、また挑戦してみたい。
 
 ## 参考資料
 
