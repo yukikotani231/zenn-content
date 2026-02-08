@@ -43,15 +43,15 @@ GPT-3は1750億パラメータすべてを推論時に使います。1トーク�
               Top-k Experts のみ活性化
 ```
 
-具体的には：
+具体的には以下の通りです。
 
-まずRouter（ゲーティング関数）が入力トークンを見て、どの専門家に任せるかを決めます：
+まずRouter（ゲーティング関数）が入力トークンを見て、どの専門家に任せるかを決めます。
 
 $$
 G(x) = \text{Softmax}(x \cdot W_g)
 $$
 
-スコアが高いTop-k個の専門家だけが活性化され、それぞれの出力を重み付き和で合成します：
+スコアが高いTop-k個の専門家だけが活性化され、それぞれの出力を重み付き和で合成します。
 
 $$
 y = \sum_{i \in \text{Top-k}} \frac{G(x)_i}{\sum_{j \in \text{Top-k}} G(x)_j} \cdot \text{Expert}_i(x)
@@ -87,11 +87,11 @@ DeepSeek-V3では671Bの総パラメータのうち、1トークンあたり37B�
 [^deepseek-v3]: [DeepSeek-V3 Technical Report](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/DeepSeek_V3.pdf)
 
 :::details MoEのトレードオフ
-**メリット：**
+**メリット**
 - 推論時の計算コスト削減（活性化パラメータが少ない）
 - スケーラビリティ（専門家を増やすだけで性能向上）
 
-**デメリット：**
+**デメリット**
 - モデルサイズが巨大（全専門家をメモリに載せる必要）
 - 学習時の負荷分散が難しい（特定の専門家に負荷が集中しがち）
 - 推論時の遅延増加の可能性（動的なルーティングのオーバーヘッド）
@@ -120,13 +120,13 @@ $$
 **GQA**（2023年提案[^gqa-paper]）は、複数のQueryヘッドで1つのKey/Valueペアを共有する仕組みです。
 
 ```
-従来のMHA（Multi-Head Attention）：
+従来のMHA（Multi-Head Attention）
 Q1, K1, V1
 Q2, K2, V2
 ...
 Q32, K32, V32
 
-GQA（例：8グループ）：
+GQA（例 8グループ）
 Q1-Q4 → K1, V1（共有）
 Q5-Q8 → K2, V2（共有）
 ...
@@ -179,7 +179,7 @@ Llama、GPT-NeoX、DeepSeekなど多くのモデルがRoPEを採用していま�
 
 :::message
 **なぜ回転なのか？**
-RoPEの核心は、異なる位置のトークンに異なる回転を適用することで、内積が相対位置のみに依存するようになる点です。位置mと位置nに対して：
+RoPEの核心は、異なる位置のトークンに異なる回転を適用することで、内積が相対位置のみに依存するようになる点です。位置mと位置nに対して以下の式が成り立ちます。
 
 $$
 (R_m q)^T (R_n k) = q^T R_{n-m} k
@@ -224,12 +224,14 @@ $$
 
 ### 3.3 推論時計算のスケーリング法則
 
-従来のスケーリング法則：
+従来のスケーリング法則は以下の通りです。
+
 $$
 \text{性能} \propto \text{パラメータ数}^{\alpha} \times \text{データ量}^{\beta}
 $$
 
-新しいスケーリング法則：
+新しいスケーリング法則は以下のようになります。
+
 $$
 \text{性能} \propto \text{推論時計算量}^{\gamma}
 $$
@@ -239,7 +241,7 @@ $$
 [^test-time-scaling]: [Reasoning and System 2 Thinking](https://www.youtube.com/watch?v=fGqFVOr5pGE)
 
 :::message alert
-**注意：o1の詳細は非公開**
+**注意 o1の詳細は非公開**
 OpenAIはo1の内部実装を公開していません。ここで述べた「思考プロセス」は、公開された挙動やサンプル出力から推測されるメカニズムです。
 :::
 
@@ -301,7 +303,7 @@ Meta（Facebook）の研究では、7Bモデルで最大3倍の学習効率向�
 
 「このモデルは何兆パラメータ？」という問いは、もはや本質的ではありません。
 
-重要なのは：
+重要なのは以下の指標です。
 
 | 指標 | 説明 | 例 |
 |------|------|-----|
@@ -343,7 +345,7 @@ GPT-4、GPT-5.2、Claude Opus 4.6、Gemini 3、Claude 3.7 Sonnetの詳細スペ�
 
 ## 参考文献
 
-主要な論文・技術レポート：
+主要な論文・技術レポートは以下の通りです。
 
 - [Attention Is All You Need](https://arxiv.org/abs/1706.03762) - Transformer原論文
 - [Language Models are Few-Shot Learners](https://arxiv.org/abs/2005.14165) - GPT-3
