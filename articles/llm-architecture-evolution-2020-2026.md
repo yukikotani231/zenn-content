@@ -149,7 +149,7 @@ $$
 
 低ランク行列分解により、KとVを一度低次元空間（潜在空間）に圧縮してからキャッシュします。これで、GQAよりもさらに小さいKVキャッシュで済みます。
 
-DeepSeek-V3では、従来のMHAと比較して約93%のKVキャッシュ削減を達成しています（512kトークンで380GBのVRAMを節約）[^deepseek-v3]。
+DeepSeek-V2の論文では、MLAにより従来のMHAと比較して約93%のKVキャッシュ削減を達成したと報告されています[^mla-paper]。
 
 [^mla-paper]: [DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model](https://arxiv.org/abs/2405.04434)
 
@@ -171,11 +171,10 @@ $d$次元ベクトルを$d/2$個の2次元ペアに分割し、各ペアに異�
 
 これにより、トークン間の相対位置が直接計算でき、学習時より長い文章でも位置情報が破綻しません（外挿性）。
 
-Llama、GPT-NeoX、DeepSeekなど多くのモデルがRoPEを採用しています。YaRN[^yarn-paper]やABF[^abf-paper]などの拡張で、100万トークン超の超長文処理も可能になりました。
+Llama、GPT-NeoX、DeepSeekなど多くのモデルがRoPEを採用しています。YaRN[^yarn-paper]などの拡張により、100万トークン超の超長文処理も可能になりました。
 
 [^rope-paper]: [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864)
 [^yarn-paper]: [YaRN: Efficient Context Window Extension of Large Language Models](https://arxiv.org/abs/2309.00071)
-[^abf-paper]: [Attention Bridge: Instruction-Tuned Attention for Long Context](https://arxiv.org/abs/2502.06526)
 
 :::message
 **なぜ回転なのか？**
