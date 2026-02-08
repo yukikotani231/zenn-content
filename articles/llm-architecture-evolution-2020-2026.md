@@ -16,6 +16,13 @@ published: false
 
 そこで、GPT-3時代で止まっていた自分の知識を、2026年現在までアップデートすることにしました。この記事は、その過程で学んだアーキテクチャの進化を整理したものです。
 
+この6年間のアーキテクチャ進化は、大きく4つの方向に分けられます。
+
+1. **効率化** - メモリと計算量の削減（MoE、GQA/MLA）
+2. **長文対応** - コンテキスト長の拡大（RoPE、GQA/MLA）
+3. **性能向上** - 精度と推論能力の向上（Test-Time Compute）
+4. **高速化** - 推論速度の向上（Speculative Decoding、MTP）
+
 :::message
 この記事は主に**アーキテクチャの変遷**に焦点を当てています。学習データの質向上、RLHF/DPOなどのアライメント手法、マルチモーダル化などの話題は別の観点として扱います。
 :::
@@ -28,7 +35,7 @@ GPT-3は1750億パラメータすべてを推論時に使います。1トーク�
 
 ### 1.2 MoEの基本原理
 
-Mixture of Experts（MoE）は、この問題を「専門家の分業」で解決します[^moe-paper]。
+**Mixture of Experts（MoE）**（2017年提案[^moe-paper]、2022年頃から実用化）は、この問題を「専門家の分業」で解決します。
 
 ```
 入力トークン → Router（ルーター） → Expert選択 → 計算 → 出力
@@ -55,9 +62,10 @@ $$
 [^moe-paper]: [Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer](https://arxiv.org/abs/1701.06538)
 
 :::details 学習時にはどの専門家に任せるかの正解ラベルがあるのか？
-**答え：ありません。** Routerは、最終的な予測タスク（言語モデルなら次トークン予測）の損失を最小化するように、勾配で自動的に学習されます。
+**答えはありません。** Routerは、最終的な予測タスク（言語モデルなら次トークン予測）の損失を最小化するように、勾配で自動的に学習されます。
 
-具体的には：
+具体的には以下の流れです。
+
 1. Router が確率的に専門家を選択
 2. 選ばれた専門家が計算
 3. 最終的な出力の損失（クロスエントロピー損失など）を計算
@@ -93,7 +101,7 @@ DeepSeek-V3では671Bの総パラメータのうち、1トークンあたり37B�
 
 ### 2.1 Multi-Head Attentionのメモリ問題
 
-Transformerの中核であるAttention機構は、以下の計算を行います：
+Transformerの中核であるAttention機構は、以下の計算を行います。
 
 $$
 \text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
@@ -101,14 +109,15 @@ $$
 
 ここで、K（Key）とV（Value）のキャッシュが推論時のメモリを圧迫します。長文処理では、このKVキャッシュのサイズが爆発的に増えます。
 
-例えば、32個のAttentionヘッドを持つモデルで128kトークンを処理する場合：
-- 各ヘッドのKVキャッシュ：`128k tokens × 128 dim × 2 (K,V) × 2 bytes (FP16) = 64 MB`
-- 全ヘッド合計：`64 MB × 32 heads = 2 GB`
+例えば、32個のAttentionヘッドを持つモデルで128kトークンを処理する場合、以下のようになります。
+
+- 各ヘッドのKVキャッシュ `128k tokens × 128 dim × 2 (K,V) × 2 bytes (FP16) = 64 MB`
+- 全ヘッド合計 `64 MB × 32 heads = 2 GB`
 - 複数レイヤーでさらに増加
 
 ### 2.2 GQA（Grouped-Query Attention）
 
-**GQA**[^gqa-paper]は、複数のQueryヘッドで1つのKey/Valueペアを共有する仕組みです。
+**GQA**（2023年提案[^gqa-paper]）は、複数のQueryヘッドで1つのKey/Valueペアを共有する仕組みです。
 
 ```
 従来のMHA（Multi-Head Attention）：
@@ -126,13 +135,13 @@ Q29-Q32 → K8, V8（共有）
 
 これで、KVキャッシュのサイズをヘッド数分の1に削減できます（上記の例では32→8で4分の1）。
 
-GPT-4やLlama 3.1などの最新モデルはGQAを採用しています。
+DeepSeek-V3やGemini 3などのモデルがGQAを採用しています。
 
 [^gqa-paper]: [GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints](https://arxiv.org/abs/2305.13245)
 
 ### 2.3 MLA（Multi-head Latent Attention）
 
-DeepSeek-V3が導入した**MLA**[^mla-paper]は、さらに進んだ圧縮手法です：
+DeepSeek-V2/V3が導入した**MLA**（2024年提案[^mla-paper]）は、さらに進んだ圧縮手法です。
 
 $$
 K = W_K^{down} W_K^{up} \cdot x, \quad V = W_V^{down} W_V^{up} \cdot x
@@ -148,7 +157,7 @@ DeepSeek-V3では、従来のMHAと比較して約93%のKVキャッシュ削減�
 
 従来のTransformerは絶対位置埋め込み（各トークンの位置を固定ベクトルで表現）を使っていました。これだと学習時の最大長を超えられないし、長文での表現力が低くなります。
 
-**RoPE**[^rope-paper]は、位置情報を回転行列として埋め込みます。2次元の場合：
+**RoPE**（2021年提案[^rope-paper]）は、位置情報を回転行列として埋め込みます。2次元の場合は以下のようになります。
 
 $$
 f(x_m, m) = \begin{pmatrix} \cos(m\theta) & -\sin(m\theta) \\ \sin(m\theta) & \cos(m\theta) \end{pmatrix} \begin{pmatrix} x_m^{(1)} \\ x_m^{(2)} \end{pmatrix}
@@ -183,10 +192,10 @@ $$
 
 ### 3.1 System 1とSystem 2
 
-心理学者ダニエル・カーネマンの「ファスト&スロー」に登場する概念を、LLMの挙動に比喩的に当てはめると：
+心理学者ダニエル・カーネマンの「ファスト&スロー」に登場する概念を、LLMの挙動に比喩的に当てはめると以下のようになります。
 
-- System 1（直感）：即座に答えを出す。速いが浅い。
-- System 2（論理）：じっくり考えて答えを出す。遅いが深い。
+- System 1（直感） 即座に答えを出す。速いが浅い。
+- System 2（論理） じっくり考えて答えを出す。遅いが深い。
 
 :::message
 **注:** LLMに実際に「直感」や「論理」があるわけではありません。これはモデルの挙動を理解するための比喩です。
@@ -196,7 +205,7 @@ $$
 
 ### 3.2 OpenAI o1の「思考プロセス」
 
-**OpenAI o1**（2024年9月リリース）[^openai-o1]は、推論時に内部で試行錯誤する仕組みを導入しました：
+**OpenAI o1**（2024年9月リリース）[^openai-o1]は、推論時に内部で試行錯誤する仕組みを導入しました。
 
 ```
 ユーザー入力
@@ -248,7 +257,7 @@ DeepSeek-R1の登場で、推論時計算の仕組みが学術的にも検証可
 
 LLMの生成は逐次的（シーケンシャル）です。1トークンずつしか生成できず、並列化が困難でした。
 
-**Speculative Decoding**[^speculative-decoding]は、CPUの投機的実行にヒントを得た手法です：
+**Speculative Decoding**（2022年提案[^speculative-decoding]）は、CPUの投機的実行にヒントを得た手法です。
 
 1. 小さな高速なモデル（Draft Model）が複数トークンを先読み生成
 2. 大きなモデル（Target Model）がそれを一括検証
@@ -268,7 +277,7 @@ Target Model（遅い）: "The cat sat on the"まで正解
 
 ### 4.2 MTP（Multi-Token Prediction）
 
-従来の言語モデルは「次の1トークン」だけを予測していました。**MTP**[^mtp-paper]は、複数先のトークンを同時に予測します：
+従来の言語モデルは「次の1トークン」だけを予測していました。**MTP**（2024年提案[^mtp-paper]）は、複数先のトークンを同時に予測します。
 
 ```
 入力: "The cat sat on"
