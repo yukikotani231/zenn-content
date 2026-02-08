@@ -1,5 +1,5 @@
 ---
-title: "GPT-3で知識が止まっている人のための、LLMアーキテクチャ進化論（2020-2026）"
+title: "GPT-3で知識が止まっている私のための、LLMアーキテクチャ進化論（2020-2026）"
 emoji: "🧠"
 type: "tech"
 topics: ["llm", "transformer", "deeplearning", "ai", "architecture"]
@@ -8,25 +8,23 @@ published: false
 
 ## はじめに
 
-「LLMって結局、次の単語を予測してるだけでしょ？」
+2020年、高専の卒研に取り組み始めた頃、ちょうどGPT-3が発表されました。175Bパラメータという巨大なモデルが登場し、few-shot learningで様々なタスクをこなす姿に衝撃を受けて、卒研のテーマとして自然言語処理を選びました。当時はTransformerの仕組みやAttention機構、スケーリング法則について一生懸命論文を読んでいました。
 
-その通りです。基本原理は2020年のGPT-3から変わっていません。でも、その中身はこの6年で別物になりました。
+その後もちょくちょく情報を追いかけていましたが、正直GPT-4が出た2023年以降、完全に置いてかれていました。「GPT-4はMoEらしい」「GQAって何？」「o1は推論時計算？」と、キーワードは耳にするものの、その中身を理解する時間が取れませんでした。
 
-GPT-3は1750億パラメータを持ち、推論時には全パラメータが動いていました。一方、2025-2026年の最新モデル（GPT-5.2、Claude Opus 4.6、Gemini 3など）は、必要な部分だけを動かす疎な活性化、長文処理でメモリを食わない効率的なAttention、答えを出す前に裏で試行錯誤する推論時計算を使っています。
+それから3〜4年が経ち、いつの間にかよく聞くワードはNLPからLLMになり、[ハリーポッターの小説を書かせていた](https://wired.jp/2020/08/17/ai-text-generator-gpt-3-learning-language-fitfully/)お遊びツールから実用ツールに変わってしまいました。でも、使っているモデルの中身が分からないままでいいのか？という疑問が湧いてきました。
 
-この記事では、GPT-3時代で知識が止まっている人向けに、LLMアーキテクチャの進化を整理します。
+そこで、GPT-3時代で止まっていた自分の知識を、2026年現在までアップデートすることにしました。この記事は、その過程で学んだアーキテクチャの進化を整理したものです。
+
+この6年間のアーキテクチャ進化は、大きく4つの方向に分けられます。
+
+1. **効率化** - メモリと計算量の削減（MoE、GQA/MLA）
+2. **長文対応** - コンテキスト長の拡大（RoPE、GQA/MLA）
+3. **性能向上** - 精度と推論能力の向上（Test-Time Compute）
+4. **高速化** - 推論速度の向上（Speculative Decoding、MTP）
 
 :::message
 この記事は主に**アーキテクチャの変遷**に焦点を当てています。学習データの質向上、RLHF/DPOなどのアライメント手法、マルチモーダル化などの話題は別の観点として扱います。
-:::
-
-:::message
-**最新モデルについて（2026年2月時点）**
-本記事で言及している最新モデルは、公式発表に基づく実在のモデルです：
-- [GPT-5.2](https://openai.com/index/introducing-gpt-5-2/)（2025年12月リリース）
-- [Claude Opus 4.6](https://www.anthropic.com/news/claude-opus-4-6)（2026年2月リリース）
-- [Gemini 3](https://blog.google/products/gemini/gemini-3/)（2025年11月リリース）
-- [Claude 3.7 Sonnet](https://www.anthropic.com/news/claude-3-7-sonnet)（2025年2月リリース）
 :::
 
 ## 1. 「巨大な一枚岩」の終焉：MoE（Mixture of Experts）
@@ -37,7 +35,7 @@ GPT-3は1750億パラメータすべてを推論時に使います。1トーク�
 
 ### 1.2 MoEの基本原理
 
-Mixture of Experts（MoE）は、この問題を「専門家の分業」で解決します[^moe-paper]。
+**Mixture of Experts（MoE）**（2017年提案[^moe-paper]、2022年頃から実用化）は、この問題を「専門家の分業」で解決します。
 
 ```
 入力トークン → Router（ルーター） → Expert選択 → 計算 → 出力
@@ -45,15 +43,15 @@ Mixture of Experts（MoE）は、この問題を「専門家の分業」で解�
               Top-k Experts のみ活性化
 ```
 
-具体的には：
+具体的には以下の通りです。
 
-まずRouter（ゲーティング関数）が入力トークンを見て、どの専門家に任せるかを決めます：
+まずRouter（ゲーティング関数）が入力トークンを見て、どの専門家に任せるかを決めます。
 
 $$
 G(x) = \text{Softmax}(x \cdot W_g)
 $$
 
-スコアが高いTop-k個の専門家だけが活性化され、それぞれの出力を重み付き和で合成します：
+スコアが高いTop-k個の専門家だけが活性化され、それぞれの出力を重み付き和で合成します。
 
 $$
 y = \sum_{i \in \text{Top-k}} \frac{G(x)_i}{\sum_{j \in \text{Top-k}} G(x)_j} \cdot \text{Expert}_i(x)
@@ -62,6 +60,22 @@ $$
 分母で正規化して、重みの合計を1にしています。これで総パラメータ数は巨大でも、推論時に動くのは一部だけという疎な活性化が実現できます。
 
 [^moe-paper]: [Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer](https://arxiv.org/abs/1701.06538)
+
+:::details 学習時にはどの専門家に任せるかの正解ラベルがあるのか？
+**答えはありません。** Routerは、最終的な予測タスク（言語モデルなら次トークン予測）の損失を最小化するように、勾配で自動的に学習されます。
+
+具体的には以下の流れです。
+
+1. Router が確率的に専門家を選択
+2. 選ばれた専門家が計算
+3. 最終的な出力の損失（クロスエントロピー損失など）を計算
+4. その損失から Router の重みにも勾配が逆伝播
+5. 「どの専門家を選べば損失が下がるか」を Router が自動的に学習
+
+加えて、特定の専門家に負荷が集中しないように、**補助損失（load balancing loss）**も使われます。これは全専門家の使用頻度を均等にするための正則化項で、メイン損失に加算されます。
+
+つまり、Router は「この入力にはこの専門家を使え」という明示的な教師信号ではなく、タスク全体の性能向上という間接的な信号から、自律的に専門化を学習します。
+:::
 
 ### 1.3 最新の工夫：DeepSeekMoE
 
@@ -73,11 +87,11 @@ DeepSeek-V3では671Bの総パラメータのうち、1トークンあたり37B�
 [^deepseek-v3]: [DeepSeek-V3 Technical Report](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/DeepSeek_V3.pdf)
 
 :::details MoEのトレードオフ
-**メリット：**
+**メリット**
 - 推論時の計算コスト削減（活性化パラメータが少ない）
 - スケーラビリティ（専門家を増やすだけで性能向上）
 
-**デメリット：**
+**デメリット**
 - モデルサイズが巨大（全専門家をメモリに載せる必要）
 - 学習時の負荷分散が難しい（特定の専門家に負荷が集中しがち）
 - 推論時の遅延増加の可能性（動的なルーティングのオーバーヘッド）
@@ -87,7 +101,7 @@ DeepSeek-V3では671Bの総パラメータのうち、1トークンあたり37B�
 
 ### 2.1 Multi-Head Attentionのメモリ問題
 
-Transformerの中核であるAttention機構は、以下の計算を行います：
+Transformerの中核であるAttention機構は、以下の計算を行います。
 
 $$
 \text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
@@ -95,23 +109,24 @@ $$
 
 ここで、K（Key）とV（Value）のキャッシュが推論時のメモリを圧迫します。長文処理では、このKVキャッシュのサイズが爆発的に増えます。
 
-例えば、32個のAttentionヘッドを持つモデルで128kトークンを処理する場合：
-- 各ヘッドのKVキャッシュ：`128k tokens × 128 dim × 2 (K,V) × 2 bytes (FP16) = 64 MB`
-- 全ヘッド合計：`64 MB × 32 heads = 2 GB`
+例えば、32個のAttentionヘッドを持つモデルで128kトークンを処理する場合、以下のようになります。
+
+- 各ヘッドのKVキャッシュ `128k tokens × 128 dim × 2 (K,V) × 2 bytes (FP16) = 64 MB`
+- 全ヘッド合計 `64 MB × 32 heads = 2 GB`
 - 複数レイヤーでさらに増加
 
 ### 2.2 GQA（Grouped-Query Attention）
 
-**GQA**[^gqa-paper]は、複数のQueryヘッドで1つのKey/Valueペアを共有する仕組みです。
+**GQA**（2023年提案[^gqa-paper]）は、複数のQueryヘッドで1つのKey/Valueペアを共有する仕組みです。
 
 ```
-従来のMHA（Multi-Head Attention）：
+従来のMHA（Multi-Head Attention）
 Q1, K1, V1
 Q2, K2, V2
 ...
 Q32, K32, V32
 
-GQA（例：8グループ）：
+GQA（例 8グループ）
 Q1-Q4 → K1, V1（共有）
 Q5-Q8 → K2, V2（共有）
 ...
@@ -120,13 +135,13 @@ Q29-Q32 → K8, V8（共有）
 
 これで、KVキャッシュのサイズをヘッド数分の1に削減できます（上記の例では32→8で4分の1）。
 
-GPT-4やLlama 3.1などの最新モデルはGQAを採用しています。
+DeepSeek-V3やGemini 3などのモデルがGQAを採用しています。
 
 [^gqa-paper]: [GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints](https://arxiv.org/abs/2305.13245)
 
 ### 2.3 MLA（Multi-head Latent Attention）
 
-DeepSeek-V3が導入した**MLA**[^mla-paper]は、さらに進んだ圧縮手法です：
+DeepSeek-V2/V3が導入した**MLA**（2024年提案[^mla-paper]）は、さらに進んだ圧縮手法です。
 
 $$
 K = W_K^{down} W_K^{up} \cdot x, \quad V = W_V^{down} W_V^{up} \cdot x
@@ -142,7 +157,7 @@ DeepSeek-V3では、従来のMHAと比較して約93%のKVキャッシュ削減�
 
 従来のTransformerは絶対位置埋め込み（各トークンの位置を固定ベクトルで表現）を使っていました。これだと学習時の最大長を超えられないし、長文での表現力が低くなります。
 
-**RoPE**[^rope-paper]は、位置情報を回転行列として埋め込みます。2次元の場合：
+**RoPE**（2021年提案[^rope-paper]）は、位置情報を回転行列として埋め込みます。2次元の場合は以下のようになります。
 
 $$
 f(x_m, m) = \begin{pmatrix} \cos(m\theta) & -\sin(m\theta) \\ \sin(m\theta) & \cos(m\theta) \end{pmatrix} \begin{pmatrix} x_m^{(1)} \\ x_m^{(2)} \end{pmatrix}
@@ -164,7 +179,7 @@ Llama、GPT-NeoX、DeepSeekなど多くのモデルがRoPEを採用していま�
 
 :::message
 **なぜ回転なのか？**
-RoPEの核心は、異なる位置のトークンに異なる回転を適用することで、内積が相対位置のみに依存するようになる点です。位置mと位置nに対して：
+RoPEの核心は、異なる位置のトークンに異なる回転を適用することで、内積が相対位置のみに依存するようになる点です。位置mと位置nに対して以下の式が成り立ちます。
 
 $$
 (R_m q)^T (R_n k) = q^T R_{n-m} k
@@ -177,10 +192,10 @@ $$
 
 ### 3.1 System 1とSystem 2
 
-心理学者ダニエル・カーネマンの「ファスト&スロー」に登場する概念を、LLMの挙動に比喩的に当てはめると：
+心理学者ダニエル・カーネマンの「ファスト&スロー」に登場する概念を、LLMの挙動に比喩的に当てはめると以下のようになります。
 
-- System 1（直感）：即座に答えを出す。速いが浅い。
-- System 2（論理）：じっくり考えて答えを出す。遅いが深い。
+- System 1（直感） 即座に答えを出す。速いが浅い。
+- System 2（論理） じっくり考えて答えを出す。遅いが深い。
 
 :::message
 **注:** LLMに実際に「直感」や「論理」があるわけではありません。これはモデルの挙動を理解するための比喩です。
@@ -190,7 +205,7 @@ $$
 
 ### 3.2 OpenAI o1の「思考プロセス」
 
-**OpenAI o1**（2024年9月リリース）[^openai-o1]は、推論時に内部で試行錯誤する仕組みを導入しました：
+**OpenAI o1**（2024年9月リリース）[^openai-o1]は、推論時に内部で試行錯誤する仕組みを導入しました。
 
 ```
 ユーザー入力
@@ -209,12 +224,14 @@ $$
 
 ### 3.3 推論時計算のスケーリング法則
 
-従来のスケーリング法則：
+従来のスケーリング法則は以下の通りです。
+
 $$
 \text{性能} \propto \text{パラメータ数}^{\alpha} \times \text{データ量}^{\beta}
 $$
 
-新しいスケーリング法則：
+新しいスケーリング法則は以下のようになります。
+
 $$
 \text{性能} \propto \text{推論時計算量}^{\gamma}
 $$
@@ -224,7 +241,7 @@ $$
 [^test-time-scaling]: [Reasoning and System 2 Thinking](https://www.youtube.com/watch?v=fGqFVOr5pGE)
 
 :::message alert
-**注意：o1の詳細は非公開**
+**注意 o1の詳細は非公開**
 OpenAIはo1の内部実装を公開していません。ここで述べた「思考プロセス」は、公開された挙動やサンプル出力から推測されるメカニズムです。
 :::
 
@@ -242,7 +259,7 @@ DeepSeek-R1の登場で、推論時計算の仕組みが学術的にも検証可
 
 LLMの生成は逐次的（シーケンシャル）です。1トークンずつしか生成できず、並列化が困難でした。
 
-**Speculative Decoding**[^speculative-decoding]は、CPUの投機的実行にヒントを得た手法です：
+**Speculative Decoding**（2022年提案[^speculative-decoding]）は、CPUの投機的実行にヒントを得た手法です。
 
 1. 小さな高速なモデル（Draft Model）が複数トークンを先読み生成
 2. 大きなモデル（Target Model）がそれを一括検証
@@ -262,7 +279,7 @@ Target Model（遅い）: "The cat sat on the"まで正解
 
 ### 4.2 MTP（Multi-Token Prediction）
 
-従来の言語モデルは「次の1トークン」だけを予測していました。**MTP**[^mtp-paper]は、複数先のトークンを同時に予測します：
+従来の言語モデルは「次の1トークン」だけを予測していました。**MTP**（2024年提案[^mtp-paper]）は、複数先のトークンを同時に予測します。
 
 ```
 入力: "The cat sat on"
@@ -286,7 +303,7 @@ Meta（Facebook）の研究では、7Bモデルで最大3倍の学習効率向�
 
 「このモデルは何兆パラメータ？」という問いは、もはや本質的ではありません。
 
-重要なのは：
+重要なのは以下の指標です。
 
 | 指標 | 説明 | 例 |
 |------|------|-----|
@@ -328,7 +345,7 @@ GPT-4、GPT-5.2、Claude Opus 4.6、Gemini 3、Claude 3.7 Sonnetの詳細スペ�
 
 ## 参考文献
 
-主要な論文・技術レポート：
+主要な論文・技術レポートは以下の通りです。
 
 - [Attention Is All You Need](https://arxiv.org/abs/1706.03762) - Transformer原論文
 - [Language Models are Few-Shot Learners](https://arxiv.org/abs/2005.14165) - GPT-3
