@@ -3,7 +3,7 @@ title: "年末年始にBitNetを実装して実用性を確かめた"
 emoji: "🔬"
 type: "tech"
 topics: ["bitnet", "triton", "pytorch", "gpu", "llm"]
-published: false
+published: true
 ---
 
 ## はじめに
@@ -19,6 +19,8 @@ BitNetはMicrosoftが2024年に提案した1.58-bit量子化手法で、重み�
 ## BitNetの概要
 
 BitNet b1.58[^bitnet-paper]は、ニューラルネットワークの重みを{-1, 0, +1}の3値に量子化します。通常のLinear層が`y = x @ W`（WはFP32/FP16）なのに対し、BitNetでは量子化したternary weightsとスケール係数を使って`y = x @ W_ternary * scale`のように計算します。
+
+「1.58-bit」という名前は、情報理論から来ています。3つの値を区別するのに必要な情報量は log₂(3) ≈ 1.585 bit です。実装上は2bitでエンコードしますが（00, 01, 10で3値を表現）、情報理論的には1パラメータあたり1.58bitの情報量しか持っていません。
 
 [^bitnet-paper]: [The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits](https://arxiv.org/abs/2402.17764)
 
