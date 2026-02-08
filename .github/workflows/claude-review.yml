@@ -1,0 +1,52 @@
+name: Claude Code PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          review_prompt: |
+            このPRをZenn記事リポジトリの観点からレビューしてください。以下の点に注目してください：
+
+            **メタデータの検証**
+            - フロントマターが正しく設定されているか（title, emoji, type, topics, publishedなど）
+            - topicsが適切か（最大5個、関連性があるか）
+            - slugが適切か（URLとして問題ないか）
+
+            **文章品質**
+            - 日本語の文法、誤字脱字
+            - 読みやすさ、わかりやすさ
+            - 文体の一貫性（ですます調が統一されているか）
+            - 専門用語の説明が適切か
+
+            **技術的正確性**
+            - コード例が正しく動作するか
+            - 技術的な説明に誤りがないか
+            - 最新の情報か（廃止されたAPIなどを使っていないか）
+
+            **記事構成**
+            - 見出し構造が適切か
+            - 導入・本文・まとめの流れが自然か
+            - コードブロックの言語指定が適切か
+
+            **Zenn固有の記法**
+            - メッセージ記法（:::message、:::alert など）の使用が適切か
+            - アコーディオン、リンクカードなどの記法が正しいか
+
+            良い点と改善提案をバランスよく、建設的にフィードバックしてください。
