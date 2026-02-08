@@ -3,7 +3,7 @@ title: "GPT-3で知識が止まっている人のための、LLMアーキテク�
 emoji: "🧠"
 type: "tech"
 topics: ["llm", "transformer", "deeplearning", "ai", "architecture"]
-published: false
+published: true
 ---
 
 ## はじめに
