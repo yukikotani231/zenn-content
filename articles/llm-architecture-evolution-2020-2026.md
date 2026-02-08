@@ -26,6 +26,15 @@ published: false
 この記事は主に**アーキテクチャの変遷**に焦点を当てています。学習データの質向上、RLHF/DPOなどのアライメント手法、マルチモーダル化などの話題は別の観点として扱います。
 :::
 
+:::message
+**最新モデルについて（2026年2月時点）**
+本記事で言及している最新モデルは、公式発表に基づく実在のモデルです：
+- [GPT-5.2](https://openai.com/index/introducing-gpt-5-2/)（2025年12月リリース）
+- [Claude Opus 4.6](https://www.anthropic.com/news/claude-opus-4-6)（2026年2月リリース）
+- [Gemini 3](https://blog.google/products/gemini/gemini-3/)（2025年11月リリース）
+- [Claude 3.7 Sonnet](https://www.anthropic.com/news/claude-3-7-sonnet)（2025年2月リリース）
+:::
+
 ## 1. 「巨大な一枚岩」の終焉：MoE（Mixture of Experts）
 
 ### 1.1 全パラメータ活性化の限界
@@ -55,10 +64,12 @@ GPT-3（2020年）は1750億パラメータを持ち、推論時には**すべ�
 
 2. **Top-k選択**：スコアが高いk個の専門家（Expert）のみを活性化
 
-3. **専門家の計算**：選ばれた専門家だけがFFN（Feed-Forward Network）を実行
+3. **専門家の計算**：選ばれた専門家だけがFFN（Feed-Forward Network）を実行し、重み付き和を取る
    $$
-   y = \sum_{i \in \text{Top-k}} G(x)_i \cdot \text{Expert}_i(x)
+   y = \sum_{i \in \text{Top-k}} \frac{G(x)_i}{\sum_{j \in \text{Top-k}} G(x)_j} \cdot \text{Expert}_i(x)
    $$
+
+   ここで、分子のゲート値を分母（Top-k専門家のゲート値の合計）で正規化することで、重みの合計が1になるようにします。
 
 この仕組みにより、**総パラメータ数は巨大だが、推論時に動くのは一部だけ**という「疎な活性化（Sparse Activation）」が実現されます。
 
@@ -72,7 +83,7 @@ GPT-3（2020年）は1750億パラメータを持ち、推論時には**すべ�
 - **共有専門家（Shared Experts）**：すべてのトークンに共通する知識を扱う専門家を別途用意
 - **負荷分散の工夫**：専門家間の計算量バランスを保つための補助損失関数
 
-例えば、DeepSeek-V3では671Bの総パラメータのうち、1トークンあたり**37Bだけ**が活性化されます（活性化率5.5%）[^deepseek-v3]。
+例えば、DeepSeek-V3では671Bの総パラメータのうち、1トークンあたり**37Bだけ**が活性化されます（活性化率5.5%）。これにより推論時の計算コストを大幅に削減しています[^deepseek-v3]。
 
 [^deepseek-moe]: [DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models](https://arxiv.org/abs/2401.06066)
 [^deepseek-v3]: [DeepSeek-V3 Technical Report](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/DeepSeek_V3.pdf)
@@ -139,7 +150,7 @@ $$
 
 **低ランク行列分解（Low-Rank Factorization）**により、KとVを一度低次元空間（潜在空間）に圧縮してからキャッシュします。これにより、GQAよりもさらに小さいKVキャッシュで済みます。
 
-DeepSeek-V3では、従来のMLAよりも**約93%のKVキャッシュ削減**を達成しています（512kトークンで380GBのVRAMを節約）[^deepseek-v3]。
+DeepSeek-V3では、従来のMHA（Multi-Head Attention）と比較して**約93%のKVキャッシュ削減**を達成しています（512kトークンで380GBのVRAMを節約）[^deepseek-v3]。
 
 [^mla-paper]: [DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model](https://arxiv.org/abs/2405.04434)
 
@@ -150,13 +161,25 @@ DeepSeek-V3では、従来のMLAよりも**約93%のKVキャッシュ削減**を
 - 学習時の最大長を超える推論ができない
 - 長文での位置情報の表現力が低い
 
-**RoPE（Rotary Positional Embedding）**[^rope-paper]は、位置情報を**回転行列**として埋め込みます：
+**RoPE（Rotary Positional Embedding）**[^rope-paper]は、位置情報を**回転行列**として埋め込みます。2次元の場合：
 
 $$
 f(x_m, m) = \begin{pmatrix} \cos(m\theta) & -\sin(m\theta) \\ \sin(m\theta) & \cos(m\theta) \end{pmatrix} \begin{pmatrix} x_m^{(1)} \\ x_m^{(2)} \end{pmatrix}
 $$
 
-ここで、$m$はトークン位置、$\theta$は回転角度です。この仕組みにより：
+ここで、$m$はトークン位置、$\theta$は回転角度です。
+
+:::details 実際の実装では
+実際のRoPEは、$d$次元ベクトルを$d/2$個の2次元ペアに分割し、各ペアに**異なる周波数**の回転を適用します：
+
+$$
+\theta_i = 10000^{-2i/d} \quad (i = 0, 1, ..., d/2-1)
+$$
+
+低次元には高周波数（短距離情報）、高次元には低周波数（長距離情報）を割り当てることで、多スケールの位置情報を表現します。
+:::
+
+この仕組みにより：
 
 - **相対位置の表現**：トークン間の距離が直接計算できる
 - **外挿性（Extrapolation）**：学習時より長い文章でも位置情報が破綻しない
@@ -182,10 +205,14 @@ $$
 
 ### 3.1 System 1とSystem 2
 
-心理学者ダニエル・カーネマンの「ファスト&スロー」に登場する概念：
+心理学者ダニエル・カーネマンの「ファスト&スロー」に登場する概念を、LLMの挙動に**比喩的に**当てはめると：
 
 - **System 1（直感）**：即座に答えを出す。速いが浅い。
 - **System 2（論理）**：じっくり考えて答えを出す。遅いが深い。
+
+:::message
+**注:** LLMに実際に「直感」や「論理」があるわけではありません。これはモデルの挙動を理解するための比喩的な説明です。
+:::
 
 従来のLLMは「System 1型」でした。入力を受け取ったら即座にトークンを生成します。しかし、数学の証明や複雑な論理推論では「じっくり考える」時間が必要です。
 
@@ -254,11 +281,11 @@ LLMの生成は**逐次的（シーケンシャル）**です。1トークンず
 3. 正しければ採用、間違っていればその時点から大きなモデルで再生成
 
 ```
-Draft Model（速い）: "The cat sat on the"
+Draft Model（速い）: "The cat sat on the mat"（推測生成）
                               ↓（一括検証）
-Target Model（遅い）: "The cat sat on the mat"
-                      ✓   ✓   ✓   ✓  ✓   ×（mat）
-                      → "mat"を採用して次へ
+Target Model（遅い）: "The cat sat on the"まで正解
+                      ✓   ✓   ✓   ✓  ✓   ×
+                      → 最初の5トークンを採用、6トークン目から再生成
 ```
 
 この手法により、大きなモデル単体よりも**2〜3倍高速**に生成できます。
