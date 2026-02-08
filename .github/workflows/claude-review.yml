@@ -17,14 +17,27 @@ permissions:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Claude Code Review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true
           prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
             このPRをZenn記事リポジトリの観点からレビューしてください。
+            PRブランチは現在のワーキングディレクトリにチェックアウト済みです。
+            `gh pr diff ${{ github.event.pull_request.number || github.event.issue.number }}` で差分を確認してください。
 
             **【最重要】ファクトチェック・技術的正確性**
             以下の項目を最優先で厳密に検証してください：
@@ -80,3 +93,8 @@ jobs:
 
             良い点と改善提案をバランスよく、建設的にフィードバックしてください。
             ただし、技術的正確性に関わる問題は遠慮なく厳しく指摘してください。
+
+            `gh pr comment` でトップレベルのフィードバックを投稿してください。
+            GitHubコメントとしてのみ投稿し、メッセージとしてテキストを返さないでください。
+          claude_args: |
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(cat:*),Bash(ls:*),Read,Glob,Grep,WebSearch,WebFetch"
