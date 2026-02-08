@@ -20,15 +20,6 @@ published: false
 この記事は主に**アーキテクチャの変遷**に焦点を当てています。学習データの質向上、RLHF/DPOなどのアライメント手法、マルチモーダル化などの話題は別の観点として扱います。
 :::
 
-:::message
-**最新モデルについて（2026年2月時点）**
-本記事で言及している最新モデルは、公式発表に基づく実在のモデルです：
-- [GPT-5.2](https://openai.com/index/introducing-gpt-5-2/)（2025年12月リリース）
-- [Claude Opus 4.6](https://www.anthropic.com/news/claude-opus-4-6)（2026年2月リリース）
-- [Gemini 3](https://blog.google/products/gemini/gemini-3/)（2025年11月リリース）
-- [Claude 3.7 Sonnet](https://www.anthropic.com/news/claude-3-7-sonnet)（2025年2月リリース）
-:::
-
 ## 1. 「巨大な一枚岩」の終焉：MoE（Mixture of Experts）
 
 ### 1.1 全パラメータ活性化の限界
