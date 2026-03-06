@@ -1,5 +1,5 @@
 ---
-title: "ターミナルからコードレビューをできるようにした (gh拡張機能を作った話)"
+title: "ターミナルからコードレビューできるようにしました"
 emoji: "🧪"
 type: "tech"
 topics: ["github", "cli", "go", "tui", "review"]

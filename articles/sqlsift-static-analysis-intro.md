@@ -1,5 +1,5 @@
 ---
-title: "SQLの静的検査ツール（CLI/LSP）を公開しました"
+title: "SQLの静的検査ツールを公開しました"
 emoji: "🧹"
 type: "tech"
 topics: ["sql", "rust", "ci", "rails", "prisma"]
